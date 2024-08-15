@@ -175,6 +175,9 @@ pub struct Opts {
     /// Whether or not to derive Eq for all types
     #[cfg_attr(feature = "clap", arg(long, default_value_t = false))]
     pub derive_eq: bool,
+    /// Whether or not to declare as Error type for types ".*error"
+    #[cfg_attr(feature = "clap", arg(long, default_value_t = false))]
+    pub derive_error: bool,
     /// Whether or not to generate stub files ; useful for update after WIT change
     #[cfg_attr(feature = "clap", arg(long, default_value_t = false))]
     pub ignore_stub: bool,
@@ -1110,14 +1113,20 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         if self.gen.opts.derive_eq {
             deriviation.push("Eq")
         }
+        let declaration = if self.gen.opts.derive_error && name.contains("Error") {
+            "type!"
+        } else {
+            "type"
+        };
 
         uwrite!(
             self.src,
             r#"
-            pub type {name} Int derive({})
+            pub {declaration} {name} Int derive({})
 
             pub fn {name}::drop(self : {name}) -> Unit {{
-                wasmImportResourceDrop{name}(self.0)
+                let {name}(resource) = self
+                wasmImportResourceDrop{name}(resource)
             }}
             "#,
             deriviation.join(", "),
@@ -1183,11 +1192,16 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         if self.gen.opts.derive_eq {
             deriviation.push("Eq")
         }
+        let declaration = if self.gen.opts.derive_error && name.contains("Error") {
+            "type!"
+        } else {
+            "type"
+        };
 
         uwrite!(
             self.src,
             "
-            pub type {name} {ty} derive({})
+            pub {declaration} {name} {ty} derive({})
             pub fn {name}::default() -> {name} {{
                 {}
             }}
@@ -1200,13 +1214,16 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
               }}
             }}
             pub fn {name}::set(self : {name}, other: {name}Flag) -> {name} {{
-              self.0.lor(other.value())
+              let {name}(flag) = self
+              flag.lor(other.value())
             }}
             pub fn {name}::unset(self : {name}, other: {name}Flag) -> {name} {{
-              self.0.land(other.value().lnot())
+              let {name}(flag) = self
+              flag.land(other.value().lnot())
             }}
             pub fn {name}::is_set(self : {name}, other: {name}Flag) -> Bool {{
-              (self.0.land(other.value()) == other.value())
+              let {name}(flag) = self
+              (flag.land(other.value()) == other.value())
             }}
             ",
             deriviation.join(", "),
@@ -1250,11 +1267,16 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         if self.gen.opts.derive_eq {
             deriviation.push("Eq")
         }
+        let declaration = if self.gen.opts.derive_error && name.contains("Error") {
+            "type!"
+        } else {
+            "enum"
+        };
 
         uwrite!(
             self.src,
             "
-            pub enum {name} {{
+            pub {declaration} {name} {{
               {cases}
             }} derive({})
             ",
@@ -1290,11 +1312,16 @@ impl<'a> wit_bindgen_core::InterfaceGenerator<'a> for InterfaceGenerator<'a> {
         if self.gen.opts.derive_eq {
             deriviation.push("Eq")
         }
+        let declaration = if self.gen.opts.derive_error && name.contains("Error") {
+            "type!"
+        } else {
+            "enum"
+        };
 
         uwrite!(
             self.src,
             "
-            pub enum {name} {{
+            pub {declaration} {name} {{
                 {cases}
             }} derive({})
             ",
@@ -1649,14 +1676,31 @@ impl Bindgen for FunctionBindgen<'_, '_> {
             }
             Instruction::BoolFromI32 => results.push(format!("({} != 0)", operands[0])),
 
-            Instruction::FlagsLower { flags, .. } => match flags_repr(flags) {
+            Instruction::FlagsLower { flags, ty, .. } => match flags_repr(flags) {
                 Int::U8 | Int::U16 | Int::U32 => {
-                    results.push(format!("({}).0.to_int()", operands[0]));
+                    let op = &operands[0];
+                    let flag = self.locals.tmp("flag");
+                    let ty = self.gen.type_name(&Type::Id(*ty), false);
+                    uwriteln!(
+                        self.src,
+                        r#"
+                        let {ty}({flag}) = {op}
+                        "#
+                    );
+                    results.push(format!("{flag}.to_int()"));
                 }
                 Int::U64 => {
                     let op = &operands[0];
-                    results.push(format!("(({op}).0.to_int())"));
-                    results.push(format!("((({op}).0.lsr(32)).to_int())"));
+                    let flag = self.locals.tmp("flag");
+                    let ty = self.gen.type_name(&Type::Id(*ty), false);
+                    uwriteln!(
+                        self.src,
+                        r#"
+                        let {ty}({flag}) = {op}
+                        "#
+                    );
+                    results.push(format!("({flag}.to_int())"));
+                    results.push(format!("({flag}.lsr(32)).to_int())"));
                 }
             },
 
@@ -1685,9 +1729,17 @@ impl Bindgen for FunctionBindgen<'_, '_> {
                 }
             },
 
-            Instruction::HandleLower { .. } => {
+            Instruction::HandleLower { ty, .. } => {
                 let op = &operands[0];
-                results.push(format!("{op}.0"));
+                let handle = self.locals.tmp("handle");
+                let ty = self.gen.type_name(&Type::Id(*ty), false);
+                uwrite!(
+                    self.src,
+                    r#"
+                    let {ty}({handle}) = {op}
+                    "#
+                );
+                results.push(handle);
             }
             Instruction::HandleLift { ty, .. } => {
                 let op = &operands[0];
